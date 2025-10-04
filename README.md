@@ -1,89 +1,179 @@
-# Apache Airflow and Kafka ETL Pipeline ⚙️
 
-This project demonstrates a robust, production-ready **Extract, Transform, Load (ETL)** data pipeline orchestrated by **Apache Airflow** that utilizes **Apache Kafka** as a streaming intermediary for decoupled data ingestion and processing.
+# Apache Airflow + Kafka ETL Pipeline ⚙️  
+[![CI](https://github.com/luckyjoy/kafka_airflow/actions/workflows/ci.yml/badge.svg)](https://github.com/luckyjoy/kafka_airflow/actions/workflows/ci.yml)
 
-The pipeline simulates a daily process for handling new **User Sign-up Events**.
+A robust, production-minded **ETL** pipeline orchestrated by **Apache Airflow** and using **Apache Kafka** to decouple ingestion from processing. It simulates daily **User Sign‑up Events** flowing through **Producer → Kafka → Consumer → Staging (CSV) → Loader**, with strong error handling, idempotency, and a full developer/CI toolchain.
 
-***
+---
 
-## Project Structure
+## ✨ Highlights
+- **Docker Compose** stack for **Kafka + Airflow + Postgres** (`docker-compose.yml`)
+- **Airflow DAG** with safe parse‑time behavior (no connection lookups at import)
+- **Kafka utilities** using `confluent-kafka` (producer retries, consumer offset semantics)
+- **Unit tests** (with fakes) + **coverage threshold** (**85%**) enforced in CI
+- **Code quality**: Black + Flake8 in CI
+- **Makefile** for one‑command dev flows
+- **Containerized tests** via `docker-compose.test.yml`
 
-The repository contains the following key files:
+---
 
-| File | Description |
-| :--- | :--- |
-| `user_etl_dag.py` | The main **Airflow Directed Acyclic Graph (DAG)** definition. It orchestrates the producer, consumer, and loading steps. |
-| `kafka_utils.py` | **Core Python logic** for interacting with Kafka (producer, consumer) and includes robust error handling and connection logic. |
-| `README.md` | This documentation file. |
+## 🗂 Repository Layout
+```
+./
+├─ docker-compose.yml              # Kafka + Airflow + Postgres stack
+├─ docker-compose.test.yml         # Run tests in an Airflow container
+├─ Makefile                        # dev, test, lint, fmt, up/down, etc.
+├─ build.sh                        # local dev setup (venv, Airflow, conn)
+├─ dags/
+│  ├─ user_etl_dag.py             # Airflow DAG (templated bootstrap servers)
+│  └─ kafka_utils.py              # Kafka producer/consumer utils
+├─ tests/
+│  ├─ test_kafka_utils.py         # base producer/consumer tests
+│  ├─ test_kafka_utils_retry.py   # producer retry behavior
+│  ├─ test_consumer_behaviors.py  # consumer edge cases
+│  ├─ test_dag.py                 # import + structure
+│  └─ test_dag_enhanced.py        # DAG props + templated args
+├─ .github/workflows/ci.yml       # CI: lint + tests + coverage + compose validate
+├─ .flake8                        # Flake8 rules
+├─ pyproject.toml                 # Black config
+├─ pytest.ini                     # pytest defaults
+├─ logs/                          # Airflow logs (mounted)
+├─ plugins/                       # Airflow plugins (optional)
+└─ README.md
+```
 
-***
+---
 
-## Pipeline Overview
+## 🧭 Architecture Diagram
+```mermaid
+flowchart LR
+  subgraph Airflow
+    A[Producer Task\n(PythonOperator)] -->|produce_user_data| K
+    C[Consumer Task\n(PythonOperator)] -->|stages CSV| S[Staging File\n/tmp/kafka_staging_*.csv]
+    L[Loader Task\n(PythonOperator)] --> D[(Data Warehouse\n(placeholder))]
+    A --> C --> L --> X[Cleanup\n(BashOperator)]
+  end
 
-The `robust_kafka_etl_pipeline` DAG executes the following steps daily:
+  K[(Kafka Topic\nuser_signups)]
+  A -->|messages| K
+  C <-->|poll/commit offsets| K
+```
 
-1.  **`generate_and_produce_data` (Python Operator):**
-    * Fetches the Kafka connection details from Airflow.
-    * Simulates generating a batch of **new user sign-up events**.
-    * **Produces** these events to the Kafka topic (`user_signups`).
-    * Includes **retries and delivery reporting** for producer reliability.
+---
 
-2.  **`consume_and_stage_data` (Python Operator):**
-    * **Consumes** the batch of messages produced in the previous step, using a unique Kafka **`group.id`** tied to the Airflow run ID.
-    * **Handles malformed messages** by committing their offset and skipping them.
-    * **Stages** the processed data (transformed into a clean CSV format) to a local temporary file (`/tmp/kafka_staging_*.csv`).
-    * Pushes the **staging file path** to Airflow **XCom** for downstream tasks.
-    * Manually **commits offsets** only upon successful completion of the staging process.
+## 🚀 Quick Start
 
-3.  **`load_staged_data` (Python Operator):**
-    * **Pulls** the staging file path from XCom.
-    * Simulates the **Load** step (e.g., reading the CSV and inserting it into a Data Warehouse like PostgreSQL, Snowflake, or S3).
-    * Includes checks for file existence and size.
+### Option A — Docker Compose (recommended)
+Requirements: Docker Desktop (or Engine) and Compose v2.
 
-4.  **`cleanup_staging_file` (Bash Operator):**
-    * **Removes** the temporary staging CSV file from the Airflow worker's filesystem.
-    * Uses the **`all_done`** trigger rule, ensuring this task runs regardless of whether the `load_staged_data` task succeeds or fails (critical for disk space management).
+```bash
+docker compose up -d --build
+# Airflow UI → http://localhost:8080  (admin / admin)
+# Unpause DAG: robust_kafka_etl_pipeline
+```
 
-***
+> The compose stack auto-installs `confluent-kafka` and creates an Airflow connection
+> **`kafka_default`** with Extra `{ "bootstrap.servers": "kafka:9092" }`.
 
-## Setup and Configuration
+### Option B — Local dev via script
+```bash
+chmod +x build.sh
+./build.sh                    # create venv + install Airflow (constraints) + deps
+./build.sh --init-db          # airflow db migrate
+./build.sh --create-admin     # admin/admin (idempotent)
+./build.sh --add-kafka-conn   # adds kafka_default (bootstrap.servers)
+./build.sh --start            # webserver :8080 + scheduler (background)
+```
 
-### Prerequisites
+### Option C — Containerized tests only
+```bash
+make test-compose
+# or
+docker compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from tests
+```
 
-1.  **Airflow Environment:** A running Apache Airflow instance (version 2.x recommended).
-2.  **Kafka Cluster:** Access to a Kafka cluster (local Docker setup recommended for development).
-3.  **Python Dependencies:**
-    ```bash
-    pip install apache-airflow 'apache-airflow-providers-apache-kafka' confluent-kafka
-    ```
+---
 
-### Airflow Connections
+## ⚙️ Configuration
+- **Kafka connection**: The DAG uses **templated** bootstrap servers to avoid `DagBag` failures at import:
+  ```jinja
+  {{ conn.kafka_default.extra_dejson['bootstrap.servers'] | default('kafka:9092', true) }}
+  ```
+  Ensure an Airflow connection with **Conn Id** `kafka_default` exists (Compose and `build.sh --add-kafka-conn` handle this for you).
 
-A **Kafka Connection** must be defined in the Airflow UI:
+- **Topic**: `user_signups` (auto-created in the Compose stack).
+- **Batch size**: `NUM_RECORDS_TO_GENERATE` in `user_etl_dag.py` (default 50).
+- **Staging output**: `/tmp/kafka_staging_<run_id>.csv` on the worker.
 
-| Field | Value | Notes |
-| :--- | :--- | :--- |
-| **Conn Id** | `kafka_default` | Must match the `KAFKA_CONN_ID` in `user_etl_dag.py`. |
-| **Conn Type** | `Apache Kafka` | Select the Kafka connection type. |
-| **Extra** | `{"bootstrap.servers": "kafka:9092"}` | Replace `kafka:9092` with your cluster's address. |
+---
 
-### Deployment
+## 🧪 Testing
+Local (venv):
+```bash
+make dev
+source venv/bin/activate
+make test         # pytest w/ coverage (85% threshold)
+make lint         # black --check + flake8
+```
+Containerized:
+```bash
+make test-compose
+```
 
-1.  Place both `user_etl_dag.py` and `kafka_utils.py` into your Airflow **`dags`** folder.
-2.  Ensure the Kafka topic (`user_signups`) exists on your cluster.
-3.  Unpause the `robust_kafka_etl_pipeline` DAG in the Airflow UI.
+**Coverage**: CI and `make test` enforce `--cov-fail-under=85`. Adjust in CI config and Makefile if needed.
 
-***
+---
 
-## Error Handling and Robustness
+## 🔄 CI/CD (GitHub Actions)
+- **Location**: `.github/workflows/ci.yml`
+- **Pipeline**:
+  - Install Airflow with official constraints (Python 3.11)
+  - Install `confluent-kafka` + Kafka provider
+  - **Black** (check) + **Flake8** (style)
+  - **pytest** with coverage (**85% minimum**), upload `coverage.xml`
+  - Validate `docker-compose.yml` and `docker-compose.test.yml`
 
-This pipeline incorporates several features for production readiness:
+Badge:
+```markdown
+[![CI](https://github.com/luckyjoy/kafka_airflow/actions/workflows/ci.yml/badge.svg)](https://github.com/luckyjoy/kafka_airflow/actions/workflows/ci.yml)
+```
 
-| Feature | Location | Benefit |
-| :--- | :--- | :--- |
-| **Connection Retries** | `kafka_utils.py` (Producer) | Internal retries for transient network issues before failing the Airflow task. |
-| **Manual Offset Commit** | `kafka_utils.py` (Consumer) | Offsets are committed *only* after data is successfully staged, preventing data loss or reprocessing on task failure. |
-| **Malformed Message Skip**| `kafka_utils.py` (Consumer) | Catches `JSONDecodeError` for bad messages, commits that specific offset, and continues processing the rest of the batch, preventing pipeline blockage. |
-| **`AirflowFailException`** | `user_etl_dag.py` | Used for configuration errors (e.g., missing Kafka connection). This immediately fails the task **without** triggering Airflow retries, saving resources. |
-| **`all_done` Trigger Rule** | `user_etl_dag.py` (Cleanup) | Guarantees the cleanup task runs even if the load step fails, maintaining disk health. |
-| **Execution Timeout** | `user_etl_dag.py` (Consumer) | Ensures the consuming task doesn't hang indefinitely waiting for messages or network resources. |
+---
+
+## 🔍 Notable Implementation Details
+- **Idempotent offsets**: Consumer commits offsets **only after** staging succeeds → safer retries.
+- **Malformed messages**: Skipped and **offset committed** to prevent poison-pill loops.
+- **Fast producer**: Single `flush()` after the batch (better throughput).
+- **Parse-time safety**: No `BaseHook`/DB calls during DAG import.
+- **Cleanup**: `all_done` trigger ensures staging files are removed even on failure.
+
+---
+
+## 🛠 Makefile Cheatsheet
+```bash
+make dev           # create venv + install deps (Airflow with constraints)
+make test          # pytest w/ coverage (>=85%)
+make lint          # black --check + flake8
+make fmt           # black (auto-format)
+make up            # docker compose up -d (full stack)
+make down          # docker compose down -v
+make logs          # tail logs from key services
+make test-compose  # run tests in apache/airflow container
+```
+
+---
+
+## 🧯 Troubleshooting
+- **DAG import errors**: Ensure `dags/user_etl_dag.py` and `dags/kafka_utils.py` are co-located.
+- **`confluent_kafka` missing**: Installed automatically in Compose; locally run `make dev`.
+- **Topic missing**: Create it manually if auto-create is disabled:
+  ```bash
+  docker compose exec kafka kafka-topics.sh --bootstrap-server kafka:9092 \
+    --create --topic user_signups --partitions 1 --replication-factor 1
+  ```
+- **Windows**: Prefer **WSL2** for Docker/paths; keep LF line endings in shell scripts.
+
+---
+
+## 📜 License
+MIT (or your organization’s standard license)

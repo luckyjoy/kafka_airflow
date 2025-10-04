@@ -1,0 +1,5 @@
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+exclude = "(venv|.venv|airflow/logs|.git|__pycache__|.pytest_cache)"
